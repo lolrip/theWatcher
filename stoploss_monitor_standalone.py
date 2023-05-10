@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import httpx
 import sys
 import json
+import tda
 
 from tda import orders, utils, auth
 from tda.orders.options import bull_put_vertical_open, bull_put_vertical_close, option_buy_to_close_stop
@@ -30,18 +31,28 @@ from discordwebhook import Discord
 # Important: Change the following link to your own discord webhook
 discord = Discord(url="https://discord.com/api/webhooks/1105458032781049896/ahJar93XMQhMEpKAUrdA0cZSlHzAy5p7X5LfMcDO5hwt88hw6eLhFEsE2JK7A8LFVUC_")
 
+def make_webdriver():
+    # Import selenium here because it's slow to import
+    from selenium import webdriver
+
+    driver = webdriver.Chrome()
+    atexit.register(lambda: driver.quit())
+    return driver
+
 ########################################################### 
 #           Returns TD Client 
 ########################################################### 
 # Setup TD Client. It will use the token and if token is expired the login window will pop up.
 # Requirements: a config file with user credentials
 def create_td_client() :
-    try:
-        client = easy_client(api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)
-    except FileNotFoundError:
-        from selenium import webdriver
-        with webdriver.Chrome() as driver:
-            client = client_from_login_flow(driver, api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)  
+    # Create a new client
+    client = tda.auth.easy_client(config.API_KEY,config.REDIRECT_URI, config.TOKEN_PATH,make_webdriver)
+    #try:
+    #    client = easy_client(api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)
+    #except FileNotFoundError:
+    #    from selenium import webdriver
+    #    with webdriver.Chrome() as driver:
+    #        client = client_from_login_flow(driver, api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)  
 
     return client
 
