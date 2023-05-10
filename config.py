@@ -5,9 +5,9 @@ API_KEY = 'XXXXX.OAUTHAP'
 
 # I have saved chromedriver and token locally on my C drive
 # That way I don't need to retrieve it everytime.
-TOKEN_PATH = 'C:/Users/kirkd/OneDrive/Desktop/theWatcher/token'
-CHROMEDRIVER_PATH = 'C:/Users/kirkd/OneDrive/Desktop/theWatcher/chromedriver'
-TRADE_LOG = 'C:/Users/kirkd/OneDrive/Desktop/theWatcher/trade_0dte.log'
+TOKEN_PATH = 'C:/path/to/theWatcher/token'
+CHROMEDRIVER_PATH = 'C:/path/to/theWatcher/chromedriver'
+TRADE_LOG = 'C:/path/to/theWatcher/trade_0dte.log'
 
 # Redirect URL
 REDIRECT_URI = 'http://localhost/'
