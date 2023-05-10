@@ -1,0 +1,16 @@
+We need to add the following function in td-api's options.py file (inside \Lib\site-packages\tda\orders\options.py).
+This is STOP order builder function.
+
+# STOP orders
+def option_buy_to_close_stop(symbol, quantity, stop_trigger):
+    '''
+    Returns a pre-filled :class:`~tda.orders.generic.OrderBuilder` for a
+    buy-to-close stop order.
+    '''
+    from tda.orders.common import OptionInstruction, OrderType, OrderStrategyType
+
+    return (__base_builder()
+        .set_order_type(OrderType.STOP)
+        .set_stop_price(stop_trigger)
+        .set_order_strategy_type(OrderStrategyType.SINGLE)
+        .add_option_leg(OptionInstruction.BUY_TO_CLOSE, symbol, quantity))
