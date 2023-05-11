@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 import httpx
 import sys
 import json
-import tda
 
 from tda import orders, utils, auth
 from tda.orders.options import bull_put_vertical_open, bull_put_vertical_close, option_buy_to_close_stop
@@ -29,15 +28,10 @@ from discordwebhook import Discord
 
 # GLobal Variables
 # Important: Change the following link to your own discord webhook
-discord = Discord(url="https://discord.com/api/webhooks/1105458032781049896/ahJar93XMQhMEpKAUrdA0cZSlHzAy5p7X5LfMcDO5hwt88hw6eLhFEsE2JK7A8LFVUC_")
+discord = Discord(url="https://discord.com/api/webhooks/1077549479466635264/Qac4hZPAEHZ-y9Z5ZeK_WMycA_aKCeX2ZnPzvIj8aRifdFadvnP8Lk507D65I4KXrCxv")
 
-def make_webdriver():
-    # Import selenium here because it's slow to import
-    from selenium import webdriver
-
-    driver = webdriver.Chrome()
-    atexit.register(lambda: driver.quit())
-    return driver
+ # 0: No notifications will be sent to discord, 1: will only send important notifications, 2: will send notifications for all actions
+discord_notification_level = 0                  
 
 ########################################################### 
 #           Returns TD Client 
@@ -45,14 +39,12 @@ def make_webdriver():
 # Setup TD Client. It will use the token and if token is expired the login window will pop up.
 # Requirements: a config file with user credentials
 def create_td_client() :
-    # Create a new client
-    client = tda.auth.easy_client(config.API_KEY,config.REDIRECT_URI, config.TOKEN_PATH,make_webdriver)
-    #try:
-    #    client = easy_client(api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)
-    #except FileNotFoundError:
-    #    from selenium import webdriver
-    #    with webdriver.Chrome() as driver:
-    #        client = client_from_login_flow(driver, api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)  
+    try:
+        client = easy_client(api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)
+    except FileNotFoundError:
+        from selenium import webdriver
+        with webdriver.Chrome() as driver:
+            client = client_from_login_flow(driver, api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)  
 
     return client
 
@@ -79,6 +71,23 @@ def check_auth_token():
     return
 
 
+###########################################################
+#   Converts SPX price to 5 cent units
+###########################################################
+# SPX opotions are priced at 5 cent incrememts, therefore we need to convert
+# prices in nickles. The following function converts a price to the nearest nickle.
+#
+# Needs
+#     org_price: original price
+# Returns
+#     new_price: price in 5C units
+#
+def nicklefy(org_price):
+    new_price = org_price * 100                    # bring up to whole
+    new_price = round(new_price/5, 0) * 5 / 100    # convert to a 5 cent mark
+    new_price = round(new_price, 2)
+
+    return new_price
 
 ########################################################### 
 #           Finds missing Stops
@@ -90,7 +99,7 @@ def check_auth_token():
 #   num_missing: number of open positions that have missing Stops
 #   missing_symbols: a list of option symbols that have missing stops
 #
-def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops) :
+def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
 
     num_missing = 0
     missing_symbols = []
@@ -105,12 +114,29 @@ def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts,
     for i in range(0, num_shorts) :
         if open_shorts[i] in working_stops :
             print("Stop exists for option: ", open_shorts[i])
+
+            # Make sure that the quantity in the working STOP order matches the quantity in the open short positions.
+            # If not, cancel existing SHORT order and resubmit it with the correct quantity.
+            if quantity_open_shorts[i] != quantity_working_stops[i]:
+                print("Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i]))
+
+                # Send notification to discord
+                if discord_notification_level != 0:
+                    discord_message = "Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i])
+                    discord.post(content=discord_message)
+
+                num_missing = num_missing + 1
+                missing_symbols.append(open_shorts[i]) 
+                missing_quantity.append(quantity_open_shorts[i])
+                missing_avg_price.append(avg_price_open_shorts[i])
+
         else : 
             print("Stop is missing for option: ", open_shorts[i])
 
             # Send notification to discord
-            discord_message = "Stop is missing for option: " + str(open_shorts[i])
-            discord.post(content=discord_message)
+            if discord_notification_level != 0:
+                discord_message = "Stop is missing for option: " + str(open_shorts[i])
+                discord.post(content=discord_message)
 
             num_missing = num_missing + 1
             missing_symbols.append(open_shorts[i]) 
@@ -237,8 +263,8 @@ def filter_orders(orders_list, filter):
         # print(df_all)
         # print("")
 
-        # save the dataframe to a CSV file
-        # The index=False parameter is used to exclude the index column from the output CSV file.
+        # # save the dataframe to a CSV file
+        # # The index=False parameter is used to exclude the index column from the output CSV file.
         # df_all.to_csv('logs/sample.csv', index=False)
 
     else :
@@ -365,15 +391,6 @@ def create_equities_df(pos_dict) :
     return df_all
 
 
-# round numbers
-def nicklefy(org_price):
-    new_price = org_price * 100                    # bring up to whole
-    new_price = round(new_price/5, 0) * 5 / 100    # convert to a 5 cent mark
-    new_price = round(new_price, 2)
-
-    return new_price
-
-
 ########################################################### 
 #   Create a simple layout for the GUI
 ########################################################### 
@@ -447,8 +464,9 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
         print("FAILED - placing the order failed.")
 
         # Send notification to discord
-        discord_message = "Failed placing the STOP Order"
-        discord.post(content=discord_message)
+        if discord_notification_level != 0:
+            discord_message = "Failed placing the STOP Order"
+            discord.post(content=discord_message)
 
         make_closing_trade = False  # stop the closing order
         return
@@ -457,8 +475,9 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
     print("Buy to Close order placed, order ID:", order_id)
 
     # Send notification to discord
-    discord_message = "Buy to Close order placed, order ID: " + str(order_id)
-    discord.post(content=discord_message)
+    if discord_notification_level != 0:  
+        discord_message = "Buy to Close order placed, order ID: " + str(order_id)
+        discord.post(content=discord_message)
 
     return order_id
 
@@ -478,9 +497,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
 
     # Create a TD API client
     client = create_td_client()
-
-    discord_message = "The Watcher is Watching"
-    discord.post(content=discord_message)
     
     while True:
         print("Monitoring stops at: ", datetime.now())
@@ -489,9 +505,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         if event.is_set():
             print("Stopped stop loss monitor task at: ", datetime.now())
             break
-
-        # Clear screen before printing new info
-        os.system('cls||clear')
 
         # Step 1: Get open positions for a given account_ID (we will need to read positions)
         response = get_open_positions(client)
@@ -515,7 +528,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         positions_dict = r['securitiesAccount']['positions']           # extract positions list from response
         for current_pos in positions_dict:  
             #print(json.dumps(current_pos, indent=4))
-            # print("Processing position: ", pos_indx)  
+            #print("Processing position: ", pos_indx)  
 
             inst_type = current_pos['instrument']['assetType']
             if inst_type == "FIXED_INCOME":
@@ -533,9 +546,10 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         # print("Number of EQUITY positions = ", num_equities)
         print("Number of open SHORT OPTION positions = ", num_options_short)
 
-        # Send notification to difscord
-        #discord_message = "Number of open SHORT OPTION positions = " + str(num_options_short)
-        #discord.post(content=discord_message)
+        # Send notification to discord
+        if discord_notification_level == 2:
+            discord_message = "Number of open SHORT OPTION positions = " + str(num_options_short)
+            discord.post(content=discord_message)
 
         # print("Number of OTHER positions = ", num_other)
 
@@ -592,10 +606,14 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             
 
             working_stops = []
+            quantity_working_stops = 0
             if len(df_stop.index > 0):
                 working_stops = df_stop["symbol"].values.tolist()
+                quantity_working_stops = df_stop["quantity"].values.tolist()
 
-            num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops)
+            num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(
+                        open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops)
+
             # if num_missing_stops > 0 :
             #     print("Found missing stops in the following positions:")
             #     print(missing_symbols)
@@ -611,8 +629,9 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                     print(missing_symbols)
                     
                     # Send notification to discord
-                    discord_message = "Found missing stops in the following positions:" + str(missing_symbols)
-                    discord.post(content=discord_message)
+                    if discord_notification_level == 2:
+                        discord_message = "Found missing stops in the following positions:" + str(missing_symbols)
+                        discord.post(content=discord_message)
 
                     # Submit Stop orders for the missing
                     # stop_type, stop_trigger
@@ -622,9 +641,8 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                         else :
                             trigger = float(stop_trigger) * float(missing_avg_price[i])
                         
-                        trigger = nicklefy(trigger)
-                        
-                        print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)
+                        print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
+                        trigger = nicklefy(float(trigger))
                         sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
 
             else :
