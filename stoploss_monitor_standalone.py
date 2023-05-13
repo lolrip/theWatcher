@@ -146,6 +146,19 @@ def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts,
     return num_missing, missing_symbols, missing_quantity, missing_avg_price
 
 
+# Finds STOP trigger based on the average FILL price of a particular order. We may have positions at the same
+# SHORT strike but at different FILL prices.
+def find_num_stops_required(missed_symbol, df_orders):
+    grouped = df_orders.groupby('symbol')
+    num_orders = grouped.get_group(missed_symbol)
+    return num_orders
+
+def find_stop_trigger(multiplier, missed_symbol, df_orders):
+    grouped = df_orders.groupby('symbol')
+    stop_trigger_df = grouped.get_group(missed_symbol).copy()
+    stop_trigger_df['trigger'] = multiplier * stop_trigger_df['price']  # add trigger column to the dataframe
+    return stop_trigger_df
+
 ########################################################### 
 #   Retrieves open positions using a call to TD Client
 ########################################################### 
@@ -163,12 +176,12 @@ def get_open_positions(client):
 
 
 ########################################################### 
-#   Retrieves working orders using a call to TD Client
+#   Retrieves orders book using a call to TD Client
 ########################################################### 
 #   fields = client.Account.Fields('orders')            # Returns all orders, including filled, cancelled, working, etc. If we use status=FILLED, it will return same infor as with positions call
 #   fields = client.Account.Fields('positions')         # Returns orders that were FILLED
 #
-def get_working_orders(client):
+def get_orders_book(client):
     fields = client.Account.Fields('orders')
     try:
         response = client.get_account(account_id=config.ACCOUNT_ID_REGULAR, fields=fields)
@@ -187,7 +200,7 @@ def get_working_orders(client):
 # Returns:
 #   df_all: a dataframe with keys "order_id", "leg_id", "datetime", "underlying", "buy_sell", "symbol", "quantity", "status"
 #
-def filter_orders(orders_list, filter):
+def filter_orders_working(orders_list, filter):
     print("Filtering orders of type: ", filter)
 
     # Convert JSON orders_list to dictionary with the order_id, leg_id, datetime, underlying, buy_sell, symbol, quantity, status
@@ -273,6 +286,114 @@ def filter_orders(orders_list, filter):
     return df_all
 
 
+def get_leg_price(legID, orderActivityCollection):
+    # print(json.dumps(orderActivityCollection, indent=4))
+    
+    orderDict = orderActivityCollection[0]
+    orderExecList = orderDict['executionLegs']
+
+    for legs in orderExecList:
+        leg_id = legs['legId']
+        price = legs['price']
+
+        if leg_id == legID:
+            return price
+
+
+def filter_orders_filled(orders_list, filter):
+    print("Filtering orders of type: ", filter)
+
+    # Convert JSON orders_list to dictionary with the order_id, leg_id, datetime, underlying, buy_sell, symbol, quantity, status
+    order_dict = {}
+    keys = ["order_id", "leg_id", "datetime", "underlying", "buy_sell", "symbol", "quantity", "status", "price"]
+    order_index = 1
+    leg_index = 1
+    df_all = pd.DataFrame(order_dict)
+    data = []  
+    
+    # print("=====> num orders = ", len(orders_list))
+    num_orders_in_filter = 0
+    
+    # FUTURE WORK: get this to work with OCO and 1st trigger , etc. orders. For now we will skip those
+    for order_strat in orders_list:  
+        # print("Processing order: ", order_index)  
+
+        if "childOrderStrategies" in order_strat :
+            print("Advanced order is being skipped for now")
+
+        else :
+            status = order_strat['status']
+
+            # Apply status filter
+            if status == filter :
+
+                #print(json.dumps(order_strat, indent=4))
+
+                num_orders_in_filter = num_orders_in_filter + 1
+                order_id = order_strat['orderId']
+                time_value = order_strat['enteredTime']
+                quantity = order_strat["quantity"]
+                order_price = order_strat["price"]
+                
+                # For multi-leg strats, get values of each leg from orderLegCollection
+                for legs in order_strat['orderLegCollection']:
+                    # The variable names used here will become columns of the dataframe
+                    leg_id = legs['legId']
+                    #effect_value = legs['positionEffect']
+                    buy_sell = legs['instruction']
+                    inst = legs['instrument']
+                    opt_symbol = inst['symbol']
+                    usymbol_value = inst['underlyingSymbol']
+                    
+                    #print("Leg: ", str(leg_index) + " effect_value: ", buy_sell, " inst: ", inst, " opt_symbol: ", opt_symbol)
+                    # Add to dictionar
+                    # keys = ["order_id", "leg_id", "datetime", "underlying", "buy_sell", "symbol", "quantity", "status", "price"]
+                    order_dict[keys[0]] = order_id
+                    order_dict[keys[1]] = leg_id
+                    order_dict[keys[2]] = time_value
+                    order_dict[keys[3]] = usymbol_value
+                    order_dict[keys[4]] = buy_sell
+                    order_dict[keys[5]] = opt_symbol
+                    order_dict[keys[6]] = quantity
+                    order_dict[keys[7]] = status
+                                       
+                    # Get individual leg price
+                    leg_price = get_leg_price(leg_id, order_strat['orderActivityCollection'])
+                    order_dict[keys[8]] = leg_price
+
+                    # # Print dict
+                    # print("Printing Dictionary . . .")
+                    # print(order_dict)
+
+                    new_df = pd.DataFrame(order_dict, index=[0])
+                    data.append(new_df)
+
+                    leg_index = leg_index + 1
+
+            order_index = order_index + 1
+
+    
+    if num_orders_in_filter > 0 :
+        # print("Number of orders that matched the filter = ", num_orders_in_filter)
+
+        df_all = pd.concat(data, ignore_index=True)
+
+        # # Print Dataframe
+        # print("")
+        # print("Dataframe of orders:")
+        # print(df_all)
+        # print("")
+
+        # # save the dataframe to a CSV file
+        # # The index=False parameter is used to exclude the index column from the output CSV file.
+        # df_all.to_csv('logs/sample.csv', index=False)
+
+    else :
+        print("No orders were found that matched the status filter within the date range!")
+
+    return df_all
+
+
 ########################################################### 
 #   Returns OPTION instruments dataframe
 ########################################################### 
@@ -309,6 +430,10 @@ def create_option_position_df(pos_dict) :
             pos_indx = pos_indx + 1
         
     df_all = pd.concat(data, ignore_index=True)
+
+
+    # For debugging or record keeping, we can save dataframe to a CSV file
+    #df_all.to_csv('logs/option_positions.csv', index=False)
 
     return df_all
 
@@ -560,7 +685,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             # Print positions Dataframe
             print("")
             print("Open Positions:")
-            print(df_pos)
+            print(df_pos1)
             print("")
 
             # # save the dataframe to a CSV file
@@ -572,8 +697,8 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             #         df_pos.to_csv('logs/stop_monitor_log.csv', mode='a', index=False, header=True)
 
 
-            # Step 2: Get working orders (we will need to read orders not positions)
-            response = get_working_orders(client)
+            # Step 2: Get orders (we will need to read orders not positions)
+            response = get_orders_book(client)
             r = json.load(response)  # Convert to JSON
             # num_orders = len(r)
             # print("Number of orders = ", num_orders)
@@ -585,16 +710,53 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             # json.dump(r, f, ensure_ascii=False, indent=4)
             # f.close()
 
-            orders_list = r['securitiesAccount']['orderStrategies']
-            filter_order_types = 'WORKING'
-            df_stop = filter_orders(orders_list, filter_order_types)
+            # Extract working orders list
+            orders_filled_list = r['securitiesAccount']['orderStrategies']
+            filter_order_type = 'FILLED'
+            df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
+
+            # Print orders Dataframe
+            print("")
+            print("Filled Orders:")
+            print(df_filled_orders)
+            print("")
+
+            # Following dataframe keeps track of order ID and short strikes. This information is used to calculate
+            # multiplier loss for scenarios when there are orders for the same strike but different entry price. This
+            # will lead to 2 STOP orders because we might have STO 1 lot at price x and the other lot at price y.
+            # FOr the fix STOP this information is not usefule because we will always use a fix STOP.
+
+            # # For testing only, we read orders book from a CSV file
+            # f1 = 'test_orders.csv'
+            # df_test = pd.read_csv(f1)
+            # # print(df_test)
+            # df_order_tracker = df_test[['symbol', 'order_id', 'quantity', 'price']]
+            # print("")
+            # print("Orders tracker:")
+            # print(df_order_tracker)
+            # print("")  
+
+            # f2 = 'test_open_positions.csv'
+            # df_pos = pd.read_csv(f2)
+            # print("")
+            # print("Open positions tracker:")
+            # print(df_pos)
+            # print("")         
+            
+            # Real World
+            df_order_tracker = df_filled_orders[['symbol', 'order_id', 'quantity', 'price']]
+            # print(df_order_tracker)
+
+            # Extract working orders list
+            orders_working_list = r['securitiesAccount']['orderStrategies']
+            filter_order_type = 'WORKING'
+            df_stop = filter_orders_working(orders_working_list, filter_order_type)
 
             # Print orders Dataframe
             print("")
             print("Working Stops:")
             print(df_stop)
             print("")
-
 
             open_shorts = []
             quantity_open_shorts = 0
@@ -604,7 +766,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                 quantity_open_shorts = df_pos["shortQuantity"].values.tolist()
                 avg_price_open_shorts = df_pos["averagePrice"].values.tolist()
             
-
             working_stops = []
             quantity_working_stops = 0
             if len(df_stop.index > 0):
@@ -638,12 +799,27 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                     for i in range(0, num_missing_stops) :
                         if stop_type == 'Fix' :
                             trigger = stop_trigger
+                            trigger = nicklefy(float(trigger))
+                            print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
+                            sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
                         else :
-                            trigger = float(stop_trigger) * float(missing_avg_price[i])
-                        
-                        print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
-                        trigger = nicklefy(float(trigger))
-                        sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
+                            num_stops_required = find_num_stops_required(missing_symbols[i], df_order_tracker)
+                            if num_stops_required == 1:
+                                # Submit single STOP order at average fill price
+                                trigger = float(stop_trigger) * float(missing_avg_price[i])
+                                trigger = nicklefy(float(trigger))
+                                print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
+                                sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
+                            else:
+                                # Submit multiple STOP orders, one for wach order                  
+                                trigger_df = find_stop_trigger(multiplier, missing_symbols[i], df_order_tracker)
+
+                                for j in range(0, num_stops_required) :
+                                    missing_quantity = int(trigger_df.iloc[j]['quantity'])
+                                    trigger =  float(trigger_df.iloc[j]['trigger'])
+                                    trigger = nicklefy(float(trigger))
+                                    print("Submitting STOP order for:", missing_symbols[i], " Quantity = ", missing_quantity, " STOP trigger = ", trigger)                       
+                                    sumbit_stop_orders(client, missing_symbols[i], missing_quantity, trigger)
 
             else :
                 print("User selected not to submit missing stops . . . ")
