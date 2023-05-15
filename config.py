@@ -2,6 +2,7 @@
 
 
 API_KEY = 'XXXXX.OAUTHAP'
+DISCORD_HOOK = 'https://discord.com/XXXXX'
 
 # I have saved chromedriver and token locally on my C drive
 # That way I don't need to retrieve it everytime.

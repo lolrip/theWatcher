@@ -28,7 +28,7 @@ from discordwebhook import Discord
 
 # GLobal Variables
 # Important: Change the following link to your own discord webhook
-discord = Discord(url="https://discord.com/api/webhooks/1077549479466635264/Qac4hZPAEHZ-y9Z5ZeK_WMycA_aKCeX2ZnPzvIj8aRifdFadvnP8Lk507D65I4KXrCxv")
+discord = Discord(url=config.DISCORD_HOOK)
 
  # 0: No notifications will be sent to discord, 1: will only send important notifications, 2: will send notifications for all actions
 discord_notification_level = 0                  
@@ -630,6 +630,9 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         if event.is_set():
             print("Stopped stop loss monitor task at: ", datetime.now())
             break
+
+        # Clear screen before printing new info
+        os.system('cls||clear')
 
         # Step 1: Get open positions for a given account_ID (we will need to read positions)
         response = get_open_positions(client)
