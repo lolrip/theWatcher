@@ -151,7 +151,7 @@ def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts,
 def find_num_stops_required(missed_symbol, df_orders):
     grouped = df_orders.groupby('symbol')
     num_orders = grouped.get_group(missed_symbol)
-    return num_orders
+    return len(num_orders)
 
 def find_stop_trigger(multiplier, missed_symbol, df_orders):
     grouped = df_orders.groupby('symbol')
@@ -688,7 +688,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             # Print positions Dataframe
             print("")
             print("Open Positions:")
-            print(df_pos1)
+            print(df_pos)
             print("")
 
             # # save the dataframe to a CSV file
