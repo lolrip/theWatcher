@@ -636,7 +636,6 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
 #       corresponding stop order in WORKING status.
 #
 def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders):
-
     # Create a TD API client
     client = create_td_client()
     
@@ -648,7 +647,9 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             print("Stopped stop loss monitor task at: ", datetime.now())
             break
 
+        #----------------------------------------------------------------------------------------
         # Step 1: Get open positions for a given account_ID (we will need to read positions)
+        #----------------------------------------------------------------------------------------
         response = get_open_positions(client)
         r = json.load(response)  # Convert to JSON
         num_open_pos = len(r)
@@ -693,10 +694,37 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             discord_message = "Number of open SHORT OPTION positions = " + str(num_options_short)
             discord.post(content=discord_message)
 
-        # print("Number of OTHER positions = ", num_other)
+        #----------------------------------------------------------------------------------------
+        # Step 2: Get orders book for today (we will need to read orders not positions)
+        #----------------------------------------------------------------------------------------
+        response = get_orders_book(client)
+        r = json.load(response)  # Convert to JSON
+        # num_orders = len(r)
+        # print("Number of orders = ", num_orders)
 
-        # Create a dataframe of 'OPTION' instruments
-        if num_options_short > 0 :
+        # # For Debugging, we can save the reponse into a json file
+        # # print(json.dumps(r, indent=4))
+        # f = open("logs/orders_book_today_raw.json", "w+")
+        # json.dump(r, f, ensure_ascii=False, indent=4)
+        # f.close()
+
+        # Extract FILLED orders list
+        orders_filled_list = r['securitiesAccount']['orderStrategies']
+        filter_order_type = 'FILLED'
+        df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
+        num_filled_orders = len(df_filled_orders)
+
+        # # Print orders Dataframe
+        # print("")
+        # print("Filled Orders:")
+        # print(df_filled_orders)
+        # print("")
+
+
+        # Stop Monitor is intended to be used for "Today's" trades.
+        # Therefore, if there are no open short positions and no FILLED orders (for today), it will 
+        # idle until an order is FILLED
+        if ((num_options_short > 0) and (num_filled_orders > 0)):
             df_pos = create_option_position_df(positions_dict)
 
             # Print positions Dataframe
@@ -705,62 +733,10 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             print(df_pos)
             print("")
 
-            # # save the dataframe to a CSV file
-            # # The index=False parameter is used to exclude the index column from the output CSV file.
-            # if num_options_short > 0 :
-            #     if os.path.exists('logs/stop_monitor_log.csv') :
-            #         df_pos.to_csv('logs/stop_monitor_log.csv', mode='a', index=False, header=False)
-            #     else :
-            #         df_pos.to_csv('logs/stop_monitor_log.csv', mode='a', index=False, header=True)
-
-
-            # Step 2: Get orders (we will need to read orders not positions)
-            response = get_orders_book(client)
-            r = json.load(response)  # Convert to JSON
-            # num_orders = len(r)
-            # print("Number of orders = ", num_orders)
-
-
-            # # For Debugging, we can save the reponse into a json file
-            # # print(json.dumps(r, indent=4))
-            # f = open("logs/orders_book_today_raw.json", "w+")
-            # json.dump(r, f, ensure_ascii=False, indent=4)
-            # f.close()
-
-            # Extract working orders list
-            orders_filled_list = r['securitiesAccount']['orderStrategies']
-            filter_order_type = 'FILLED'
-            df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
-
-            # # Print orders Dataframe
-            # print("")
-            # print("Filled Orders:")
-            # print(df_filled_orders)
-            # print("")
-
             # Following dataframe keeps track of order ID and short strikes. This information is used to calculate
             # multiplier loss for scenarios when there are orders for the same strike but different entry price. This
-            # will lead to 2 STOP orders because we might have STO 1 lot at price x and the other lot at price y.
-            # FOr the fix STOP this information is not usefule because we will always use a fix STOP.
-
-            # # For testing only, we read orders book & open short positions from a CSV file
-            # f1 = 'test_orders.csv'
-            # df_test = pd.read_csv(f1)
-            # # print(df_test)
-            # df_order_tracker = df_test[['symbol', 'order_id', 'quantity', 'price']]
-            # print("")
-            # print("Orders tracker:")
-            # print(df_order_tracker)
-            # print("")  
-
-            # f2 = 'test_open_positions.csv'
-            # df_pos = pd.read_csv(f2)
-            # print("")
-            # print("Open positions tracker:")
-            # print(df_pos)
-            # print("")         
-            
-            # Real World
+            # may lead to multiple STOP orders because we might have STO 1 lot at price x and the other lot at price y.
+            # For the fix STOP this information is not useful because we will always use a fix STOP.
             df_order_tracker = df_filled_orders[['symbol', 'order_id', 'quantity', 'price']]
             # print(df_order_tracker)
 
@@ -768,7 +744,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             df_symbol_qty = df_filled_orders[['symbol', 'quantity', 'price']]
             quantity_pos_df = calc_symbol_quantity(df_symbol_qty)
 
-            # Calculate avergae price
+            # Calculate average price
             for i in range(0, len(quantity_pos_df)) :
                 x = quantity_pos_df.iloc[i]['price'] /quantity_pos_df.iloc[i]['quantity'] 
                 quantity_pos_df.loc[i, 'price'] = x
@@ -814,15 +790,9 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(quantity_pos_df, quantity_stop_df,
                         open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops)
 
-            # if num_missing_stops > 0 :
-            #     print("Found missing stops in the following positions:")
-            #     print(missing_symbols)
-            #     print(missing_quantity)
-            #     print(missing_avg_price)
-
-
-            # Step 3: match working STOP orders with open SHORT poisitons and see if there is a STOP missing
-            # Open positions are in df "df_pos" and working stops are in "df_stop"
+            #------------------------------------------------------
+            # Step 3: Submit STOP orders for missing positions
+            #------------------------------------------------------
             if submit_stop_orders :
                 if num_missing_stops > 0 :
                     print("Found missing stops in the following positions:")
