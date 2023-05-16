@@ -49,7 +49,6 @@ def create_td_client() :
     return client
 
 
-
 ###########################################################
 #           Checks status of TD Token
 ###########################################################
@@ -153,6 +152,29 @@ def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantit
 
     return num_missing, missing_symbols, missing_quantity, missing_avg_price
 
+
+def find_itm_short_positions(itm_offset, open_shorts, quantity_open_shorts, working_stops):
+    num_itm = 0
+    itm_symbols = []
+    itm_quantity = []
+    itm_stop_order_id = []
+
+    num_shorts = len(open_shorts)
+    num_stops = len(working_stops)
+    for i in range(0, num_shorts) :
+
+        strike_short = float(open_shorts[i])
+        SPX_value = float(SPXValue)
+        
+        if abs(SPX_value - strike_short) <= itm_offset:
+            print("ITM protection activated for: ", open_shorts[i])
+            num_itm = num_itm + 1
+            itm_symbols.append(open_shorts[i]) 
+            itm_quantity.append(quantity_open_shorts[i])
+            stop_order_id = find_stop_order_id(open_shorts[i], working_stops)
+            itm_stop_order_id.append(stop_order_id)
+
+    return  num_itm_positions, itm_symbols, itm_quantity, itm_stop_order_id 
 
 # Finds STOP trigger based on the average FILL price of a particular order. We may have positions at the same
 # SHORT strike but at different FILL prices.
@@ -558,6 +580,9 @@ layout = [
     # Text and input box
     [sg.Text('Stop Trigger', size=(20, 1)), sg.InputText(size=(10, 1), default_text='2.5', key='stop_trigger')],
 
+    # Text and input box
+    [sg.Text('ITM Protection Offset', size=(20, 1)), sg.InputText(size=(10, 1), default_text='1.0', key='itm_protection_offset')],
+
     # Submit STOP order for missing stops
     # If a user checks a checkbox, it will return True otherwise False
     [sg.Text('Submit Orders for Missing Stops', size=(25,1)), sg.Checkbox('', default=True, key='submitStopOrders'),],
@@ -644,11 +669,11 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
     client = create_td_client()
     
     while True:
-        print("Monitoring stops at: ", datetime.now())
+        print("The Watcher is monitoring Short positions: ", datetime.now())
 
         # If "Stop" button is pressed on the GUI, end Stop Loss Monitor thread
         if event.is_set():
-            print("Stopped stop loss monitor task at: ", datetime.now())
+            print("Stopped The Watcher task at: ", datetime.now())
             break
 
         #----------------------------------------------------------------------------------------
@@ -658,12 +683,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         r = json.load(response)  # Convert to JSON
         num_open_pos = len(r)
         print("Number of open positions = ", num_open_pos)
-
-        # # For Debugging, we can save the reponse into a json file
-        # # print(json.dumps(r, indent=4))
-        # f = open("logs/positions_book_today_raw.json", "w+")
-        # json.dump(r, f, ensure_ascii=False, indent=4)
-        # f.close()
 
         # calculate number of positions for various instruments
         num_fixed_income = 0
@@ -706,17 +725,13 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         # num_orders = len(r)
         # print("Number of orders = ", num_orders)
 
-        # # For Debugging, we can save the reponse into a json file
-        # # print(json.dumps(r, indent=4))
-        # f = open("logs/orders_book_today_raw.json", "w+")
-        # json.dump(r, f, ensure_ascii=False, indent=4)
-        # f.close()
-
         # Extract FILLED orders list
         orders_filled_list = r['securitiesAccount']['orderStrategies']
         filter_order_type = 'FILLED'
         df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
         num_filled_orders = len(df_filled_orders)
+
+        # # Simulated Scenario
         # f1 = 'kirk_filled_orders_df.csv'
         # df_filled_orders = pd.read_csv(f1)
         # num_filled_orders = len(df_filled_orders)
@@ -732,6 +747,8 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         # idle until an order is FILLED
         if ((num_options_short > 0) and (num_filled_orders > 0)):
             df_pos = create_option_position_df(positions_dict)
+
+            # # Simulated Scenario
             # f2 = 'kirk_open_pos_df.csv'
             # df_pos = pd.read_csv(f2)
 
@@ -757,6 +774,10 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                 x = quantity_pos_df.iloc[i]['price'] /quantity_pos_df.iloc[i]['quantity'] 
                 quantity_pos_df.loc[i, 'price'] = x
 
+            # # Simulated Scenario
+            # f3 = 'kirk_qty_pos_df.csv'
+            # quantity_pos_df = pd.read_csv(f3)
+
             print("")
             print("Quantity in positions dataframe:")
             print(quantity_pos_df)
@@ -766,8 +787,10 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             orders_working_list = r['securitiesAccount']['orderStrategies']
             filter_order_type = 'WORKING'
             df_stop = filter_orders_working(orders_working_list, filter_order_type)
-            # f3 = 'kirk_working_stops.csv'
-            # df_stop = pd.read_csv(f3)
+            
+            # # Simulated Scenario
+            # f4 = 'kirk_working_stops.csv'
+            # df_stop = pd.read_csv(f4)
 
             # Print orders Dataframe
             print("")
@@ -778,6 +801,11 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             # Calculate total quantity per symbol from all the working stop orders
             df_symbol_qty2 = df_stop[['symbol', 'quantity']]
             quantity_stop_df = calc_symbol_quantity(df_symbol_qty2)
+            
+            # # Simulated Scenario
+            # f5 = 'kirk_qty_stops_df.csv'
+            # quantity_stop_df = pd.read_csv(f5)
+            
             print("")
             print("Quantity in Stops dataframe:")
             print(quantity_stop_df)
@@ -827,7 +855,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                                 sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
                             else:
                                 # Submit multiple STOP orders, one for wach order                  
-                                trigger_df = find_stop_trigger(multiplier, missing_symbols[i], df_order_tracker)
+                                trigger_df = find_stop_trigger(stop_trigger, missing_symbols[i], df_order_tracker)
 
                                 for j in range(0, num_stops_required) :
                                     missing_quantity = int(trigger_df.iloc[j]['quantity'])
@@ -844,16 +872,110 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
     return
 
 
+########################################################### 
+#       In-The-Money Protector
+########################################################### 
+# If SPX is within distance (defined by the user) to a short position, 
+# it will replace the STOP order with "MARKET" order and done.
+#
+def in_the_money_protector(event, loop_timer, itm_offset):
+    # Create a TD API client
+    client = create_td_client()
+    
+    while True:
+        print("In The Money Protector is running . . .: ", datetime.now())
+
+        # If "Stop" button is pressed on the GUI, end ITM Protector thread
+        if event.is_set():
+            print("Stopped In-The-Money Protector task at: ", datetime.now())
+            break
+
+        #----------------------------------------------------------------------------------------
+        # Step 1: Get open positions for a given account_ID (we will need to read positions)
+        #----------------------------------------------------------------------------------------
+        response = get_open_positions(client)
+        r = json.load(response)  # Convert to JSON
+        num_open_pos = len(r)
+
+        # calculate number of positions for various instruments
+        num_options_short = 0
+        pos_indx = 0
+        positions_dict = r['securitiesAccount']['positions']           # extract positions list from response
+        for current_pos in positions_dict:  
+            inst_type = current_pos['instrument']['assetType']
+            if inst_type == 'OPTION' and current_pos['shortQuantity'] > 0:
+                num_options_short = num_options_short + 1
+
+            pos_indx = pos_indx + 1
+
+        print("Number of open SHORT OPTION positions = ", num_options_short)
+
+        #----------------------------------------------------------------------------------------
+        # Step 2: Get orders book for today (we will need to read orders not positions)
+        #----------------------------------------------------------------------------------------
+        response = get_orders_book(client)
+        r = json.load(response)  # Convert to JSON
+
+        # Extract working orders list
+        orders_working_list = r['securitiesAccount']['orderStrategies']
+        filter_order_type = 'WORKING'
+        df_stop = filter_orders_working(orders_working_list, filter_order_type)
+        num_working_stops = len(df_stop)
+        print("Number of WORKING STOP orders = ", num_working_stops)
+
+        if (num_options_short > 0):
+            df_pos = create_option_position_df(positions_dict)
+
+            open_shorts = []
+            quantity_open_shorts = 0
+            avg_price_open_shorts = 0
+            if len(df_pos.index > 0):
+                open_shorts = df_pos["symbol"].values.tolist()
+                quantity_open_shorts = df_pos["shortQuantity"].values.tolist()
+                avg_price_open_shorts = df_pos["averagePrice"].values.tolist()
+            
+            working_stops = []
+            quantity_working_stops = 0
+            if len(df_stop.index > 0):
+                working_stops = df_stop["symbol"].values.tolist()
+                quantity_working_stops = df_stop["quantity"].values.tolist()
+
+            num_itm_positions, itm_symbols, itm_quantity, stop_order_id = find_itm_short_positions(itm_offset, open_shorts, quantity_open_shorts, working_stops)
+
+            #------------------------------------------------------
+            # Step 3: Replace BTC STOP order with BTC MARKET Order
+            #------------------------------------------------------
+            if num_missing_stops > 0 :
+                print("ITM protection activated for the following positions:")
+                print(itm_symbols)
+                
+                # Send notification to discord
+                if discord_notification_level == 2:
+                    discord_message = "ITM protection activated for the following positions:" + str(missing_symbols)
+                    discord.post(content=discord_message)
+
+                for i in range(0, num_missing_stops) :
+                    sumbit_btc_market_order(client, missing_symbols[i], int(missing_quantity[i]), trigger)
+
+            time.sleep(loop_timer)
+
+        time.sleep(loop_timer)
+  
+    return
+
+
+
 if __name__ == '__main__':
     # Check Authorization token to see if we are near expiration
     check_auth_token()
 
     # Create a basic GUI window from the layout defined above
     window_title = 'Stop Loss Monitor'
-    window = sg.Window(window_title, layout, size=(300, 180))
+    window = sg.Window(window_title, layout, size=(300, 200))
 
-    # create the event
-    thread_event = Event()
+    # Events to communicate with threads
+    stop_thread_event = Event()
+    itm_thread_event = Event()
 
     # We can use while loop to check for any gui_events that may occur when using the window.read() method
     while True:
@@ -863,15 +985,22 @@ if __name__ == '__main__':
         scheduler_loop = float(values['loop_timer'])
         stop_type = values['stop_type']
         stop_trigger = values['stop_trigger']
+        itm_protection_offset = values['itm_protection_offset']
         submit_stop_orders = values['submitStopOrders']
 
         # Create a thread to run the stop mointor
-        t1 = threading.Thread(target=stop_monitor, args=(thread_event, scheduler_loop, stop_type,stop_trigger, submit_stop_orders,))
+        t1 = threading.Thread(target=stop_monitor, args=(stop_thread_event, scheduler_loop, stop_type, stop_trigger, submit_stop_orders,))
+
+        # Create a thread to run the in-the-money protector
+        t2 = threading.Thread(target=in_the_money_protector, args=(itm_thread_event, scheduler_loop, itm_protection_offset,))
 
         if gui_event == 'Stop':
-            stop_thread(thread_event)
+            stop_thread(stop_thread_event)
+            stop_thread(itm_thread_event)
 
-        elif gui_event == sg.WIN_CLOSED or gui_event == 'Exit':        
+        elif gui_event == sg.WIN_CLOSED or gui_event == 'Exit':  
+            stop_thread(stop_thread_event)
+            stop_thread(itm_thread_event)      
             break
         
         elif gui_event == 'Clear':
@@ -879,9 +1008,8 @@ if __name__ == '__main__':
 
         else :      
             #print(gui_event, values)
-            thread_event.clear()
-
-            # Run stop monitor function
-            #stop_monitor(scheduler_loop, stop_type, stop_trigger, submit_stop_orders)      # Uncomment for scheduled run
+            stop_thread_event.clear()
+            itm_thread_event.clear()
             t1.start()
+            # t2.start()
                
