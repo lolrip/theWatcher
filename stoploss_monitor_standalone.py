@@ -99,53 +99,6 @@ def nicklefy(org_price):
 #   num_missing: number of open positions that have missing Stops
 #   missing_symbols: a list of option symbols that have missing stops
 #
-def find_missing_stops_OLD(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
-
-    num_missing = 0
-    missing_symbols = []
-    missing_quantity = []
-    missing_avg_price = []
-
-    num_shorts = len(open_shorts)
-    num_stops = len(working_stops)
-    print("Num Shorts = ", num_shorts)
-    print("Num Stops = ", num_stops)
-
-    for i in range(0, num_shorts) :
-        if open_shorts[i] in working_stops :
-            print("Stop exists for option: ", open_shorts[i])
-
-            # Make sure that the quantity in the working STOP order matches the quantity in the open short positions.
-            # If not, cancel existing SHORT order and resubmit it with the correct quantity.
-            if quantity_open_shorts[i] != quantity_working_stops[i]:
-                print("Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i]))
-
-                # Send notification to discord
-                if discord_notification_level != 0:
-                    discord_message = "Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i])
-                    discord.post(content=discord_message)
-
-                num_missing = num_missing + 1
-                missing_symbols.append(open_shorts[i]) 
-                missing_quantity.append(quantity_open_shorts[i])
-                missing_avg_price.append(avg_price_open_shorts[i])
-
-        else : 
-            print("Stop is missing for option: ", open_shorts[i])
-
-            # Send notification to discord
-            if discord_notification_level != 0:
-                discord_message = "Stop is missing for option: " + str(open_shorts[i])
-                discord.post(content=discord_message)
-
-            num_missing = num_missing + 1
-            missing_symbols.append(open_shorts[i]) 
-            missing_quantity.append(quantity_open_shorts[i])
-            missing_avg_price.append(avg_price_open_shorts[i])
-
-    return num_missing, missing_symbols, missing_quantity, missing_avg_price
-
-# Modified by Tabish on 05152023
 def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
 
     num_missing = 0
@@ -401,7 +354,13 @@ def filter_orders_filled(orders_list, filter):
                     buy_sell = legs['instruction']
                     inst = legs['instrument']
                     opt_symbol = inst['symbol']
-                    usymbol_value = inst['underlyingSymbol']
+
+                    if (legs['orderLegType'] == 'OPTION'):
+                        usymbol_value = inst['underlyingSymbol']
+                    else:
+                        num_orders_in_filter = num_orders_in_filter - 1   # we are only conv=cerned about OPTIONs for now
+                        break
+
                     
                     #print("Leg: ", str(leg_index) + " effect_value: ", buy_sell, " inst: ", inst, " opt_symbol: ", opt_symbol)
                     # Add to dictionar
