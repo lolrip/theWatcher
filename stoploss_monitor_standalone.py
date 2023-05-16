@@ -100,7 +100,6 @@ def nicklefy(org_price):
 #   missing_symbols: a list of option symbols that have missing stops
 #
 def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
-
     num_missing = 0
     missing_symbols = []
     missing_quantity = []
@@ -116,24 +115,28 @@ def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantit
         if open_shorts[i] in working_stops :
             print("Stop exists for option: ", open_shorts[i])
 
-            # Make sure that the quantity in the working STOP order matches the quantity in the open short positions.
-            # If not, cancel existing SHORT order and resubmit it with the correct quantity.
-            qty_open_short = int(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
-            qty_work_stop = int(qty_work_stop_df.loc[qty_work_stop_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
-            avg_price = float(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'price'].iloc[0])
+            if open_shorts[i] in qty_open_short_df['symbol'].values :   
 
-            if qty_open_short != qty_work_stop:
-                print("Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i]))
+                # Make sure that the quantity in the working STOP order matches the quantity in the open short positions.
+                # If not, cancel existing SHORT order and resubmit it with the correct quantity.
+                qty_open_short = int(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
+                qty_work_stop = int(qty_work_stop_df.loc[qty_work_stop_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
+                avg_price = float(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'price'].iloc[0])
 
-                # Send notification to discord
-                if discord_notification_level != 0:
-                    discord_message = "Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i])
-                    discord.post(content=discord_message)
+                if qty_open_short != qty_work_stop:
+                    print("Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i]))
 
-                num_missing = num_missing + 1
-                missing_symbols.append(open_shorts[i]) 
-                missing_quantity.append(qty_open_short)
-                missing_avg_price.append(avg_price)
+                    # Send notification to discord
+                    if discord_notification_level != 0:
+                        discord_message = "Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i])
+                        discord.post(content=discord_message)
+
+                    num_missing = num_missing + 1
+                    missing_symbols.append(open_shorts[i]) 
+                    missing_quantity.append(qty_open_short)
+                    missing_avg_price.append(avg_price)
+            else:
+                print("No order ID found for: ", open_shorts[i], ", will skip this position . . .")
 
         else : 
             print("Stop is missing for option: ", open_shorts[i])
@@ -547,7 +550,7 @@ layout = [
     # Text and Input box. Text is 15 characters wide & 1 character tall. In the input field the essential thing is the key
     # We will use the key to retrive value from the input form
     # Timer at which to run the monitor at
-    [sg.Text('Loop Timer (seconds)', size=(20, 1)), sg.InputText(size=(10, 1), default_text='10.0', key='loop_timer')],
+    [sg.Text('Loop Timer (seconds)', size=(20, 1)), sg.InputText(size=(10, 1), default_text='2.0', key='loop_timer')],
 
      # Combo box with 2 types of STOP losses to chose from
     [sg.Text('Stop Type', size=(20, 1)), sg.Combo(['Fix', 'Multiplier'], default_value='Fix', size=(10, 1), key='stop_type')],
@@ -557,7 +560,7 @@ layout = [
 
     # Submit STOP order for missing stops
     # If a user checks a checkbox, it will return True otherwise False
-    [sg.Text('Submit Orders for Missing Stops', size=(25,1)), sg.Checkbox('', key='submitStopOrders'),],
+    [sg.Text('Submit Orders for Missing Stops', size=(25,1)), sg.Checkbox('', default=True, key='submitStopOrders'),],
     
     # Buttons
     [sg.Submit('Start'), sg.Button('Stop'), sg.Button('Clear'), sg.Exit()]
@@ -591,6 +594,7 @@ def stop_thread(event):
 #   order_id: order ID os the stop order placed
 #
 def sumbit_stop_orders(client, symbol, quantity, trigger) :
+    trigger = nicklefy(float(trigger))
     print(" Preparing STOP order for = ", symbol, " quantity = ", quantity, " with STOP at = ", trigger)
     stop_order = option_buy_to_close_stop(symbol, quantity, trigger)
     stop_order.set_duration(orders.common.Duration.GOOD_TILL_CANCEL) 
@@ -713,19 +717,23 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         filter_order_type = 'FILLED'
         df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
         num_filled_orders = len(df_filled_orders)
+        # f1 = 'kirk_filled_orders_df.csv'
+        # df_filled_orders = pd.read_csv(f1)
+        # num_filled_orders = len(df_filled_orders)
 
-        # # Print orders Dataframe
-        # print("")
-        # print("Filled Orders:")
-        # print(df_filled_orders)
-        # print("")
-
+        # Print orders Dataframe
+        print("")
+        print("Filled Orders:")
+        print(df_filled_orders)
+        print("")
 
         # Stop Monitor is intended to be used for "Today's" trades.
         # Therefore, if there are no open short positions and no FILLED orders (for today), it will 
         # idle until an order is FILLED
         if ((num_options_short > 0) and (num_filled_orders > 0)):
             df_pos = create_option_position_df(positions_dict)
+            # f2 = 'kirk_open_pos_df.csv'
+            # df_pos = pd.read_csv(f2)
 
             # Print positions Dataframe
             print("")
@@ -758,6 +766,8 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             orders_working_list = r['securitiesAccount']['orderStrategies']
             filter_order_type = 'WORKING'
             df_stop = filter_orders_working(orders_working_list, filter_order_type)
+            # f3 = 'kirk_working_stops.csv'
+            # df_stop = pd.read_csv(f3)
 
             # Print orders Dataframe
             print("")
@@ -807,17 +817,13 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                     # stop_type, stop_trigger
                     for i in range(0, num_missing_stops) :
                         if stop_type == 'Fix' :
-                            trigger = stop_trigger
-                            trigger = nicklefy(float(trigger))
-                            print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
+                            trigger = stop_trigger                    
                             sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
                         else :
                             num_stops_required = find_num_stops_required(missing_symbols[i], df_order_tracker)
                             if num_stops_required == 1:
                                 # Submit single STOP order at average fill price
-                                trigger = float(stop_trigger) * float(missing_avg_price[i])
-                                trigger = nicklefy(float(trigger))
-                                print("Submitting STOP order for:", missing_symbols[i], " avg STO = ", missing_avg_price, " Quantity = ", int(missing_quantity[i]), " STOP trigger = ", trigger)                       
+                                trigger = float(stop_trigger) * float(missing_avg_price[i])                  
                                 sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
                             else:
                                 # Submit multiple STOP orders, one for wach order                  
@@ -825,9 +831,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
 
                                 for j in range(0, num_stops_required) :
                                     missing_quantity = int(trigger_df.iloc[j]['quantity'])
-                                    trigger =  float(trigger_df.iloc[j]['trigger'])
-                                    trigger = nicklefy(float(trigger))
-                                    print("Submitting STOP order for:", missing_symbols[i], " Quantity = ", missing_quantity, " STOP trigger = ", trigger)                       
+                                    trigger =  float(trigger_df.iloc[j]['trigger'])                  
                                     sumbit_stop_orders(client, missing_symbols[i], missing_quantity, trigger)
 
             else :
