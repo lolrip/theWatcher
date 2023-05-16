@@ -99,7 +99,7 @@ def nicklefy(org_price):
 #   num_missing: number of open positions that have missing Stops
 #   missing_symbols: a list of option symbols that have missing stops
 #
-def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
+def find_missing_stops_OLD(open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
 
     num_missing = 0
     missing_symbols = []
@@ -145,6 +145,58 @@ def find_missing_stops(open_shorts, quantity_open_shorts, avg_price_open_shorts,
 
     return num_missing, missing_symbols, missing_quantity, missing_avg_price
 
+# Modified by Tabish on 05152023
+def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops) :
+
+    num_missing = 0
+    missing_symbols = []
+    missing_quantity = []
+    missing_avg_price = []
+
+    num_shorts = len(open_shorts)
+    num_stops = len(working_stops)
+    print("Num Shorts = ", num_shorts)
+    print("Num Stops = ", num_stops)
+
+    for i in range(0, num_shorts) :
+        
+        if open_shorts[i] in working_stops :
+            print("Stop exists for option: ", open_shorts[i])
+
+            # Make sure that the quantity in the working STOP order matches the quantity in the open short positions.
+            # If not, cancel existing SHORT order and resubmit it with the correct quantity.
+            qty_open_short = int(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
+            qty_work_stop = int(qty_work_stop_df.loc[qty_work_stop_df['symbol'] == open_shorts[i], 'quantity'].iloc[0])
+            avg_price = float(qty_open_short_df.loc[qty_open_short_df['symbol'] == open_shorts[i], 'price'].iloc[0])
+
+            if qty_open_short != qty_work_stop:
+                print("Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i]))
+
+                # Send notification to discord
+                if discord_notification_level != 0:
+                    discord_message = "Missmatch in quantity between working STOP order and Open Short position for: " + str(open_shorts[i])
+                    discord.post(content=discord_message)
+
+                num_missing = num_missing + 1
+                missing_symbols.append(open_shorts[i]) 
+                missing_quantity.append(qty_open_short)
+                missing_avg_price.append(avg_price)
+
+        else : 
+            print("Stop is missing for option: ", open_shorts[i])
+
+            # Send notification to discord
+            if discord_notification_level != 0:
+                discord_message = "Stop is missing for option: " + str(open_shorts[i])
+                discord.post(content=discord_message)
+
+            num_missing = num_missing + 1
+            missing_symbols.append(open_shorts[i]) 
+            missing_quantity.append(quantity_open_shorts[i])
+            missing_avg_price.append(avg_price_open_shorts[i])
+
+    return num_missing, missing_symbols, missing_quantity, missing_avg_price
+
 
 # Finds STOP trigger based on the average FILL price of a particular order. We may have positions at the same
 # SHORT strike but at different FILL prices.
@@ -158,6 +210,12 @@ def find_stop_trigger(multiplier, missed_symbol, df_orders):
     stop_trigger_df = grouped.get_group(missed_symbol).copy()
     stop_trigger_df['trigger'] = multiplier * stop_trigger_df['price']  # add trigger column to the dataframe
     return stop_trigger_df
+
+def calc_symbol_quantity(df_order_tracker):
+    # Calculate the sum of columns based on the 'symbol' column
+    temp_df = df_order_tracker.groupby('symbol').sum().reset_index()
+    quantity_df = temp_df.copy()
+    return quantity_df
 
 ########################################################### 
 #   Retrieves open positions using a call to TD Client
@@ -631,9 +689,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             print("Stopped stop loss monitor task at: ", datetime.now())
             break
 
-        # Clear screen before printing new info
-        os.system('cls||clear')
-
         # Step 1: Get open positions for a given account_ID (we will need to read positions)
         response = get_open_positions(client)
         r = json.load(response)  # Convert to JSON
@@ -718,18 +773,18 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             filter_order_type = 'FILLED'
             df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
 
-            # Print orders Dataframe
-            print("")
-            print("Filled Orders:")
-            print(df_filled_orders)
-            print("")
+            # # Print orders Dataframe
+            # print("")
+            # print("Filled Orders:")
+            # print(df_filled_orders)
+            # print("")
 
             # Following dataframe keeps track of order ID and short strikes. This information is used to calculate
             # multiplier loss for scenarios when there are orders for the same strike but different entry price. This
             # will lead to 2 STOP orders because we might have STO 1 lot at price x and the other lot at price y.
             # FOr the fix STOP this information is not usefule because we will always use a fix STOP.
 
-            # # For testing only, we read orders book from a CSV file
+            # # For testing only, we read orders book & open short positions from a CSV file
             # f1 = 'test_orders.csv'
             # df_test = pd.read_csv(f1)
             # # print(df_test)
@@ -750,6 +805,20 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             df_order_tracker = df_filled_orders[['symbol', 'order_id', 'quantity', 'price']]
             # print(df_order_tracker)
 
+            # Calculate total quantity per symbol from all the orders
+            df_symbol_qty = df_filled_orders[['symbol', 'quantity', 'price']]
+            quantity_pos_df = calc_symbol_quantity(df_symbol_qty)
+
+            # Calculate avergae price
+            for i in range(0, len(quantity_pos_df)) :
+                x = quantity_pos_df.iloc[i]['price'] /quantity_pos_df.iloc[i]['quantity'] 
+                quantity_pos_df.loc[i, 'price'] = x
+
+            print("")
+            print("Quantity in positions dataframe:")
+            print(quantity_pos_df)
+            print("")  
+
             # Extract working orders list
             orders_working_list = r['securitiesAccount']['orderStrategies']
             filter_order_type = 'WORKING'
@@ -760,6 +829,14 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             print("Working Stops:")
             print(df_stop)
             print("")
+
+            # Calculate total quantity per symbol from all the working stop orders
+            df_symbol_qty2 = df_stop[['symbol', 'quantity']]
+            quantity_stop_df = calc_symbol_quantity(df_symbol_qty2)
+            print("")
+            print("Quantity in Stops dataframe:")
+            print(quantity_stop_df)
+            print("")  
 
             open_shorts = []
             quantity_open_shorts = 0
@@ -775,7 +852,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                 working_stops = df_stop["symbol"].values.tolist()
                 quantity_working_stops = df_stop["quantity"].values.tolist()
 
-            num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(
+            num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(quantity_pos_df, quantity_stop_df,
                         open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops)
 
             # if num_missing_stops > 0 :
