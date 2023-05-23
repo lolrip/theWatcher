@@ -16,10 +16,14 @@ from tda.orders.generic import OrderBuilder
 from tda.auth import easy_client
 from tda.client import Client
 from tda.utils import Utils
+from tda.streaming import StreamClient
 
 # For threading
 import threading
 from threading import Event
+
+# For regular expression functionality (used to extract strike from option symbol)
+import re
 
 # For discord notifications
 from discordwebhook import Discord      # for sending messages to discord
@@ -27,6 +31,8 @@ from discordwebhook import Discord      # for sending messages to discord
 from discordwebhook import Discord
 
 # GLobal Variables
+spx_value = 0
+
 # Important: Change the following link to your own discord webhook
 discord = Discord(url=config.DISCORD_HOOK)
 
@@ -47,7 +53,6 @@ def create_td_client() :
             client = client_from_login_flow(driver, api_key=config.API_KEY, redirect_uri=config.REDIRECT_URI, token_path=config.TOKEN_PATH)  
 
     return client
-
 
 
 ###########################################################
@@ -153,6 +158,39 @@ def find_missing_stops(qty_open_short_df, qty_work_stop_df, open_shorts, quantit
 
     return num_missing, missing_symbols, missing_quantity, missing_avg_price
 
+
+########################################################### 
+#       In-The-Money Calculator
+########################################################### 
+# It detects any short position within itm_offset distance from the SPX value
+#
+def find_itm_short_positions(itm_offset, open_shorts, quantity_open_shorts, working_stops):
+    distance_allowed = float(itm_offset)
+
+    num_itm = 0
+    itm_symbols = []
+    itm_quantity = []
+    itm_stop_order_id = []
+
+    num_shorts = len(open_shorts)
+    num_stops = len(working_stops)
+    for i in range(0, num_shorts) :
+        numbers = re.findall(r"\d+", open_shorts[i])
+        if numbers:
+            strike_short = float(numbers[1])
+        else:
+            print("No strike found.")
+            strike_short = 0
+
+        if abs(spx_value - strike_short) <= distance_allowed:
+            print("ITM protection activated for: ", open_shorts[i])
+            num_itm = num_itm + 1
+            itm_symbols.append(open_shorts[i]) 
+            itm_quantity.append(quantity_open_shorts[i])
+            stop_order_id = find_stop_order_id(open_shorts[i], working_stops)
+            itm_stop_order_id.append(stop_order_id)
+
+    return  num_itm, itm_symbols, itm_quantity, itm_stop_order_id 
 
 # Finds STOP trigger based on the average FILL price of a particular order. We may have positions at the same
 # SHORT strike but at different FILL prices.
@@ -314,6 +352,7 @@ def get_leg_price(legID, orderActivityCollection):
             return price
 
 
+# Buld a dataframe of Filled STO orders
 def filter_orders_filled(orders_list, filter):
     print("Filtering orders of type: ", filter)
 
@@ -334,26 +373,22 @@ def filter_orders_filled(orders_list, filter):
 
         if "childOrderStrategies" in order_strat :
             print("Advanced order is being skipped for now")
-
         else :
-            status = order_strat['status']
-
             # Apply status filter
-            if status == filter :
-
+            status = order_strat['status']
+            
+            if status == filter:
                 #print(json.dumps(order_strat, indent=4))
 
                 num_orders_in_filter = num_orders_in_filter + 1
                 order_id = order_strat['orderId']
                 time_value = order_strat['enteredTime']
                 quantity = order_strat["quantity"]
-                order_price = order_strat["price"]
                 
                 # For multi-leg strats, get values of each leg from orderLegCollection
                 for legs in order_strat['orderLegCollection']:
                     # The variable names used here will become columns of the dataframe
                     leg_id = legs['legId']
-                    #effect_value = legs['positionEffect']
                     buy_sell = legs['instruction']
                     inst = legs['instrument']
                     opt_symbol = inst['symbol']
@@ -368,27 +403,29 @@ def filter_orders_filled(orders_list, filter):
                     #print("Leg: ", str(leg_index) + " effect_value: ", buy_sell, " inst: ", inst, " opt_symbol: ", opt_symbol)
                     # Add to dictionar
                     # keys = ["order_id", "leg_id", "datetime", "underlying", "buy_sell", "symbol", "quantity", "status", "price"]
-                    order_dict[keys[0]] = order_id
-                    order_dict[keys[1]] = leg_id
-                    order_dict[keys[2]] = time_value
-                    order_dict[keys[3]] = usymbol_value
-                    order_dict[keys[4]] = buy_sell
-                    order_dict[keys[5]] = opt_symbol
-                    order_dict[keys[6]] = quantity
-                    order_dict[keys[7]] = status
-                                       
-                    # Get individual leg price
-                    leg_price = get_leg_price(leg_id, order_strat['orderActivityCollection'])
-                    order_dict[keys[8]] = leg_price
+                    if buy_sell == 'SELL_TO_OPEN':
+                        order_dict[keys[0]] = order_id
+                        order_dict[keys[1]] = leg_id
+                        order_dict[keys[2]] = time_value
+                        order_dict[keys[3]] = usymbol_value
+                        order_dict[keys[4]] = buy_sell
+                        order_dict[keys[5]] = opt_symbol
+                        order_dict[keys[6]] = quantity
+                        order_dict[keys[7]] = status
+                                        
+                        # Get individual leg price
+                        leg_price = get_leg_price(leg_id, order_strat['orderActivityCollection'])
+                        order_dict[keys[8]] = leg_price
 
-                    # # Print dict
-                    # print("Printing Dictionary . . .")
-                    # print(order_dict)
+                        # # Print dict
+                        # print("Printing Dictionary . . .")
+                        # print(order_dict)
 
-                    new_df = pd.DataFrame(order_dict, index=[0])
-                    data.append(new_df)
+                        # Add new row to dataframe
+                        new_df = pd.DataFrame(order_dict, index=[0])
+                        data.append(new_df)
 
-                    leg_index = leg_index + 1
+                        leg_index = leg_index + 1
 
             order_index = order_index + 1
 
@@ -544,6 +581,9 @@ sg.theme('DarkGrey9')
 
 # Each row in the layout represents a column in the GUI
 layout = [
+    # Text element to display current SPX value
+    [sg.Text('SPX: ', font=('Arial Bold', 15), justification='left'), sg.Text('', font=('Arial Bold', 15), justification='center', key='SPXValue')],
+
     # Simple Text 
     [sg.Text('Please fill out the following fields:')],
     
@@ -558,6 +598,9 @@ layout = [
     # Text and input box
     [sg.Text('Stop Trigger', size=(20, 1)), sg.InputText(size=(10, 1), default_text='2.5', key='stop_trigger')],
 
+    # Text and input box
+    [sg.Text('ITM Protection Offset', size=(20, 1)), sg.InputText(size=(10, 1), default_text='1.0', key='itm_protection_offset')],
+
     # Submit STOP order for missing stops
     # If a user checks a checkbox, it will return True otherwise False
     [sg.Text('Submit Orders for Missing Stops', size=(25,1)), sg.Checkbox('', default=True, key='submitStopOrders'),],
@@ -566,6 +609,7 @@ layout = [
     [sg.Submit('Start'), sg.Button('Stop'), sg.Button('Clear'), sg.Exit()]
     #[sg.Button('Start SL Monitor', button_type=sg.Submit()), sg.Button('Stop SL Monitor'), sg.Button('Clear Form'), sg.Button('Close Form', sg.Exit())]
 ]
+
 
 ########################################################### 
 #       GUI Functions
@@ -593,10 +637,15 @@ def stop_thread(event):
 # Returns:
 #   order_id: order ID os the stop order placed
 #
+def float_to_string(number):
+    formatted_string = "{:0.02f}".format(number)
+    return formatted_string
+
 def sumbit_stop_orders(client, symbol, quantity, trigger) :
-    trigger = nicklefy(float(trigger))
+    trigger_float = nicklefy(float(trigger))
+    trigger_string = float_to_string(trigger_float)
     print(" Preparing STOP order for = ", symbol, " quantity = ", quantity, " with STOP at = ", trigger)
-    stop_order = option_buy_to_close_stop(symbol, quantity, trigger)
+    stop_order = option_buy_to_close_stop(symbol, quantity, trigger_string)  # In order to avoid rounding issues, use string instead of float for the price
     stop_order.set_duration(orders.common.Duration.GOOD_TILL_CANCEL) 
 
     # Place the Stop order
@@ -614,7 +663,6 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
             discord_message = "Failed placing the STOP Order"
             discord.post(content=discord_message)
 
-        make_closing_trade = False  # stop the closing order
         return
 
     # This order ID can then be used to monitor or modify the order
@@ -628,6 +676,56 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
     return order_id
 
 
+def replace_stop_with_market_order(client, orig_order_id, symbol, quantity) :
+    # Prepare the BTC Market order
+    btc_market_order = option_buy_to_close_market(symbol, quantity)
+    btc_market_order.set_duration(orders.common.Duration.GOOD_TILL_CANCEL) 
+
+    if orig_order_id == 0:
+        # Place BTC Market order
+        r = client.place_order(config.ACCOUNT_ID_REGULAR, btc_market_order)  
+    else:
+        # Replace existing BTC Stop order with BTC Market order
+        r = client.replace_order(config.ACCOUNT_ID_REGULAR, itm_order_id, btc_market_order)
+    
+    print("Order status code - ", r.status_code)
+    if r.status_code < 400:  # http codes under 400 are success. usually 200 or 201
+        order_id = Utils(client, config.ACCOUNT_ID_REGULAR).extract_order_id(r)
+        print("Order placed, order ID-", order_id)
+    else:
+        print("FAILED - placing the order failed.")
+
+        # Send notification to discord
+        if discord_notification_level != 0:
+            discord_message = "Failed placing the BTC Market Order"
+            discord.post(content=discord_message)
+
+        return
+
+    # This order ID can then be used to monitor or modify the order
+    print("Buy to Close Market order placed, order ID:", order_id)
+
+    # Send notification to discord
+    if discord_notification_level != 0:  
+        discord_message = "Buy to Close order placed, order ID: " + str(order_id)
+        discord.post(content=discord_message)
+
+    return order_id
+
+def find_order_id_for_position(symbol, stop_orders_df):
+    order_id_list = []
+
+    # If a working stop order exists return its order id, otherwise return 0
+    num_orders = stop_orders_df['orderID'].value_counts()[symbol]
+
+    if num_orders > 0:
+        for i in range(0, count) :
+            order_id_list[i] = stop_orders_df.iloc[i]['order_id']
+    else:
+        order_id_list = [0]
+
+    return num_orders, order_id_list
+
 ########################################################### 
 #       Stop orders monitor
 ########################################################### 
@@ -639,16 +737,16 @@ def sumbit_stop_orders(client, symbol, quantity, trigger) :
 #       short option position that does not have a 
 #       corresponding stop order in WORKING status.
 #
-def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders):
+def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders, itm_offset):
     # Create a TD API client
     client = create_td_client()
     
     while True:
-        print("Monitoring stops at: ", datetime.now())
+        print("The Watcher is monitoring Short positions: ", datetime.now())
 
         # If "Stop" button is pressed on the GUI, end Stop Loss Monitor thread
         if event.is_set():
-            print("Stopped stop loss monitor task at: ", datetime.now())
+            print("Stopped The Watcher task at: ", datetime.now())
             break
 
         #----------------------------------------------------------------------------------------
@@ -658,12 +756,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         r = json.load(response)  # Convert to JSON
         num_open_pos = len(r)
         print("Number of open positions = ", num_open_pos)
-
-        # # For Debugging, we can save the reponse into a json file
-        # # print(json.dumps(r, indent=4))
-        # f = open("logs/positions_book_today_raw.json", "w+")
-        # json.dump(r, f, ensure_ascii=False, indent=4)
-        # f.close()
 
         # calculate number of positions for various instruments
         num_fixed_income = 0
@@ -706,20 +798,11 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         # num_orders = len(r)
         # print("Number of orders = ", num_orders)
 
-        # # For Debugging, we can save the reponse into a json file
-        # # print(json.dumps(r, indent=4))
-        # f = open("logs/orders_book_today_raw.json", "w+")
-        # json.dump(r, f, ensure_ascii=False, indent=4)
-        # f.close()
-
         # Extract FILLED orders list
         orders_filled_list = r['securitiesAccount']['orderStrategies']
         filter_order_type = 'FILLED'
         df_filled_orders = filter_orders_filled(orders_filled_list, filter_order_type)
         num_filled_orders = len(df_filled_orders)
-        # f1 = 'kirk_filled_orders_df.csv'
-        # df_filled_orders = pd.read_csv(f1)
-        # num_filled_orders = len(df_filled_orders)
 
         # Print orders Dataframe
         print("")
@@ -732,8 +815,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
         # idle until an order is FILLED
         if ((num_options_short > 0) and (num_filled_orders > 0)):
             df_pos = create_option_position_df(positions_dict)
-            # f2 = 'kirk_open_pos_df.csv'
-            # df_pos = pd.read_csv(f2)
 
             # Print positions Dataframe
             print("")
@@ -766,8 +847,6 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             orders_working_list = r['securitiesAccount']['orderStrategies']
             filter_order_type = 'WORKING'
             df_stop = filter_orders_working(orders_working_list, filter_order_type)
-            # f3 = 'kirk_working_stops.csv'
-            # df_stop = pd.read_csv(f3)
 
             # Print orders Dataframe
             print("")
@@ -778,6 +857,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
             # Calculate total quantity per symbol from all the working stop orders
             df_symbol_qty2 = df_stop[['symbol', 'quantity']]
             quantity_stop_df = calc_symbol_quantity(df_symbol_qty2)
+            
             print("")
             print("Quantity in Stops dataframe:")
             print(quantity_stop_df)
@@ -797,6 +877,33 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                 working_stops = df_stop["symbol"].values.tolist()
                 quantity_working_stops = df_stop["quantity"].values.tolist()
 
+            #-----------------------------------------
+            # Perform In-The-Money Protection check
+            #-----------------------------------------
+            # If SPX is within distance (defined by the user) to a short position, 
+            # replace the existing STOP order with "MARKET" order. If no existing STOP order
+            # then submit a new "MARKET" order to close the position
+            num_itm_positions, itm_symbols, itm_quantity, stop_order_id = find_itm_short_positions(itm_offset, open_shorts, quantity_open_shorts, working_stops)
+            if num_itm_positions > 0:
+                print("WARNING: ITM protection activated for the positions:")
+                print(itm_symbols)
+                
+                # Send notification to discord
+                if discord_notification_level == 2:
+                    discord_message = "WARNING: ITM protection activated for the positions:" + str(missing_symbols)
+                    discord.post(content=discord_message)
+
+                for i in range(0, num_itm_positions) :   
+                    # Replace BTC STOP ordet with BTC MARKET order     
+                    # # Note to self: we could replace existing stops with amrket orders but it is faster to just submit
+                    # market orders for the open short quantity. TD does not allow simultaneous buy & sell in the same symbol
+                    # so it will practically replace the existing STOP order(s) with the new MARKET order             
+                    # itm_order_id = find_order_id_for_position(itm_symbols[i], df_symbol_qty2)
+                    itm_order_id = 0
+                    replace_stop_with_market_order(client, itm_order_id, itm_symbols[i], int(itm_quantity[i]))
+
+
+            # Perform missing stops check
             num_missing_stops, missing_symbols, missing_quantity, missing_avg_price = find_missing_stops(quantity_pos_df, quantity_stop_df,
                         open_shorts, quantity_open_shorts, avg_price_open_shorts, working_stops, quantity_working_stops)
 
@@ -827,7 +934,7 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
                                 sumbit_stop_orders(client, missing_symbols[i], int(missing_quantity[i]), trigger)
                             else:
                                 # Submit multiple STOP orders, one for wach order                  
-                                trigger_df = find_stop_trigger(multiplier, missing_symbols[i], df_order_tracker)
+                                trigger_df = find_stop_trigger(stop_trigger, missing_symbols[i], df_order_tracker)
 
                                 for j in range(0, num_stops_required) :
                                     missing_quantity = int(trigger_df.iloc[j]['quantity'])
@@ -844,16 +951,58 @@ def stop_monitor(event, loop_timer, stop_type, stop_trigger, submit_stop_orders)
     return
 
 
+# SPX Value Streamer
+def retrieve_SPX_value(client):
+    make_trade = True
+    startdate = datetime.now()
+    # Tomorrow. This will ensure that we get data up to current time
+    enddate = datetime.now() + timedelta(days=1)
+
+    option_chain = {}
+    contract_type_call = client.Options.ContractType.CALL
+    option_chain = client.get_option_chain('$SPX.X', contract_type=contract_type_call, strike_count=5, include_quotes=True, from_date=startdate, to_date=enddate)
+    assert option_chain.status_code == httpx.codes.OK, r.raise_for_status()
+
+    # Extract json data
+    lastPrice = 0
+    option_chain = option_chain.json()
+    if option_chain['status'] == 'FAILED':
+        # logging.error('Retrieval of CALL options chain failed')
+        make_trade = False
+    else:
+        lastPrice = option_chain["underlying"]["last"]
+
+    return lastPrice
+
+
+def stream_SPX_value(event, loop_timer,):
+    global spx_value
+
+    # Update SPX value using option chain
+    client = create_td_client()
+    while True:
+        # check for stop thread event
+        if event.is_set():
+            print("Stopping SPX value Thread")
+            return
+
+        spx_value = retrieve_SPX_value(client)
+        window['SPXValue'].update(spx_value)         # Update SPX value on the GUI       
+        time.sleep(1.0)
+
+
+
 if __name__ == '__main__':
     # Check Authorization token to see if we are near expiration
     check_auth_token()
 
     # Create a basic GUI window from the layout defined above
     window_title = 'Stop Loss Monitor'
-    window = sg.Window(window_title, layout, size=(300, 180))
+    window = sg.Window(window_title, layout, size=(300, 250))
 
-    # create the event
-    thread_event = Event()
+    # Events to communicate with threads
+    stop_thread_event = Event()
+    spx_stream_thread_event = Event()
 
     # We can use while loop to check for any gui_events that may occur when using the window.read() method
     while True:
@@ -863,15 +1012,22 @@ if __name__ == '__main__':
         scheduler_loop = float(values['loop_timer'])
         stop_type = values['stop_type']
         stop_trigger = values['stop_trigger']
+        itm_protection_offset = values['itm_protection_offset']
         submit_stop_orders = values['submitStopOrders']
 
         # Create a thread to run the stop mointor
-        t1 = threading.Thread(target=stop_monitor, args=(thread_event, scheduler_loop, stop_type,stop_trigger, submit_stop_orders,))
+        t1 = threading.Thread(target=stop_monitor, args=(stop_thread_event, scheduler_loop, stop_type, stop_trigger, submit_stop_orders, itm_protection_offset, ))
+
+        # Create a thread to stream SPX value
+        t2 = threading.Thread(target=stream_SPX_value, args=(spx_stream_thread_event, scheduler_loop,))
 
         if gui_event == 'Stop':
-            stop_thread(thread_event)
+            stop_thread(stop_thread_event)
+            stop_thread(spx_stream_thread_event)
 
-        elif gui_event == sg.WIN_CLOSED or gui_event == 'Exit':        
+        elif gui_event == sg.WIN_CLOSED or gui_event == 'Exit':  
+            stop_thread(stop_thread_event)
+            stop_thread(spx_stream_thread_event)     
             break
         
         elif gui_event == 'Clear':
@@ -879,9 +1035,7 @@ if __name__ == '__main__':
 
         else :      
             #print(gui_event, values)
-            thread_event.clear()
-
-            # Run stop monitor function
-            #stop_monitor(scheduler_loop, stop_type, stop_trigger, submit_stop_orders)      # Uncomment for scheduled run
+            stop_thread_event.clear()
+            spx_stream_thread_event.clear()
             t1.start()
-               
+            t2.start()         
